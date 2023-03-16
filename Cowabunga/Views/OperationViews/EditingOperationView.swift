@@ -35,6 +35,15 @@ struct EditingOperationView: View {
     @State var replacingData: Data? = nil
     @State var backupData: Data? = nil
     
+    private let hasPadding: [String] = [
+            "plist",
+            "strings",
+            "loctable",
+            "materialrecipe",
+            "visualstyleset"
+        ]
+        @State var showPaddingButton: Bool = false
+    
     // plist properties
     @State var plistType: PropertyListSerialization.PropertyListFormat = .xml
     @State var replacingKeys: [String: Any] = [:]
@@ -128,6 +137,7 @@ struct EditingOperationView: View {
                             // add the actions
                             alert.addAction(corruptingAction)
                             alert.addAction(replacingAction)
+                            alert.addAction(creatingAction)
                             if #available(iOS 15, *) {
                                 alert.addAction(plistAction)
                             }
@@ -383,6 +393,29 @@ struct EditingOperationView: View {
                                     Text("Upload File")
                                         .foregroundColor(.blue)
                                         .multilineTextAlignment(.trailing)
+                                }
+                            }
+                            
+                            if showPaddingButton == true, let fileData = try? Data(contentsOf: URL(fileURLWithPath: filePath)) {
+                                HStack {
+                                    Spacer()
+                                    Button(action: {
+                                        UIApplication.shared.alert(title: NSLocalizedString("Generating padding...", comment: "Custom operation generating plist padding"), body: NSLocalizedString("Please wait...", comment: ""), animated: true, withButton: false)
+                                        do {
+                                            let plist = try PropertyListSerialization.propertyList(from: replacingData!, options: [], format: nil) as! [String: Any]
+                                            let newData = try addEmptyData(matchingSize: fileData.count, to: plist)
+                                            replacingData = newData
+                                            showPaddingButton = false
+                                            UIApplication.shared.dismissAlert(animated: true)
+                                        } catch {
+                                            UIApplication.shared.dismissAlert(animated: true)
+                                            UIApplication.shared.alert(body: error.localizedDescription)
+                                        }
+                                    }) {
+                                        Text("Generate Padding")
+                                            .foregroundColor(.blue)
+                                            .multilineTextAlignment(.trailing)
+                                    }
                                 }
                             }
                         }
@@ -726,18 +759,41 @@ struct EditingOperationView: View {
                 if editing {
                     // create export button
                     Button(action: {
-                        // create and configure alert controller
-                        let alert = UIAlertController(title: NSLocalizedString("Author Name", comment: "Header for inputting your name"), message: NSLocalizedString("Enter your name and you will be credited for creating the operation.", comment: "Message for inputting your name in custom operation"), preferredStyle: .alert)
-                        // bring up the text prompt
-                        alert.addTextField { (textField) in
-                            textField.placeholder = "Name"
-                        }
-                        
-                        // buttons
-                        alert.addAction(UIAlertAction(title: NSLocalizedString("Apply", comment: ""), style: .default) { (action) in
-                            // set the version
-                            let author: String = alert.textFields?[0].text ?? ""
-                            saveCurrentOperation(author, alerts: false)
+                        // get the saved author name if it exists
+                        let savedAuthorName = UserDefaults.standard.string(forKey: "CustomOperationsAuthorName")
+                        if savedAuthorName == nil {
+                            // user did not set an author name
+                            // create and configure alert controller
+                            let alert = UIAlertController(title: NSLocalizedString("Author Name", comment: "Header for inputting your name"), message: NSLocalizedString("Enter your name and you will be credited for creating the operation.", comment: "Message for inputting your name in custom operation"), preferredStyle: .alert)
+                            // bring up the text prompt
+                            alert.addTextField { (textField) in
+                                textField.placeholder = "Enter Name"
+                            }
+                            
+                            // buttons
+                            alert.addAction(UIAlertAction(title: NSLocalizedString("Apply", comment: ""), style: .default) { (action) in
+                                // set the version
+                                let author: String = alert.textFields?[0].text ?? ""
+                                saveCurrentOperation(author, alerts: false)
+                                do {
+                                    let archiveURL = try AdvancedManager.exportOperation(operationName)
+                                    
+                                    // show share menu
+                                    let avc = UIActivityViewController(activityItems: [archiveURL], applicationActivities: nil)
+                                    let view: UIView = UIApplication.shared.windows.first!.rootViewController!.view
+                                    avc.popoverPresentationController?.sourceView = view // prevents crashing on iPads
+                                    avc.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.maxY, width: 0, height: 0) // show up at center bottom on iPads
+                                    UIApplication.shared.windows.first?.rootViewController?.present(avc, animated: true)
+                                } catch {
+                                    UIApplication.shared.alert(title: NSLocalizedString("Operation export failed!", comment: "failing to export custom operation"), body: error.localizedDescription)
+                                }
+                            })
+                            alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel) { (action) in
+                                // cancel the process
+                            })
+                            UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true, completion: nil)
+                        } else {
+                            saveCurrentOperation(savedAuthorName!, alerts: false)
                             do {
                                 let archiveURL = try AdvancedManager.exportOperation(operationName)
                                 
@@ -750,11 +806,7 @@ struct EditingOperationView: View {
                             } catch {
                                 UIApplication.shared.alert(title: NSLocalizedString("Operation export failed!", comment: "failing to export custom operation"), body: error.localizedDescription)
                             }
-                        })
-                        alert.addAction(UIAlertAction(title: NSLocalizedString("Cancel", comment: ""), style: .cancel) { (action) in
-                            // cancel the process
-                        })
-                        UIApplication.shared.windows.first?.rootViewController?.present(alert, animated: true, completion: nil)
+                        }
                     }) {
                         Image(systemName: "square.and.arrow.up")
                             .foregroundColor(.blue)
@@ -775,6 +827,7 @@ struct EditingOperationView: View {
                         // write to temp file
                         try replacingData!.write(to: newURL)
                         replacingPath = newURL.path
+                        showPaddingButton = hasPadding.contains(URL(fileURLWithPath: replacingPath).pathExtension)
                         url.stopAccessingSecurityScopedResource()
                     } catch {
                         UIApplication.shared.alert(body: NSLocalizedString("An error occurred", comment: "") + ": \(error.localizedDescription)")
@@ -800,6 +853,7 @@ struct EditingOperationView: View {
                     replacingPath = replacingOperation.replacingPath
                     if replacingOperation.replacingType == .Imported && operation.replacementData != Data("#".utf8) {
                         replacingData = operation.replacementData
+                        showPaddingButton = hasPadding.contains(URL(fileURLWithPath: replacingPath).pathExtension)
                     }
                 } else if let plistOperation = operation as? PlistObject {
                     plistType = plistOperation.plistType
